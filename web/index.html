@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Satellite Pass Predictor</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  :root { --bg: #0f1419; --panel: #172029; --text: #e6edf3; --muted: #8b98a5; --accent: #4fc3f7; --hit: #ffb74d; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.4 system-ui, sans-serif; background: var(--bg); color: var(--text);
+         display: grid; grid-template-columns: 1fr 380px; height: 100vh; }
+  #map { height: 100vh; }
+  aside { padding: 16px; overflow-y: auto; background: var(--panel); }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  .muted { color: var(--muted); font-size: 12px; }
+  .stat { font-variant-numeric: tabular-nums; margin: 12px 0; }
+  input[type=range] { width: 100%; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; font-size: 12px; }
+  th, td { text-align: left; padding: 4px 2px; border-bottom: 1px solid #263340; }
+  tr.pass { cursor: pointer; } tr.pass:hover { background: #1f2b36; }
+  .high { color: var(--hit); font-weight: 600; }
+  @media (max-width: 800px) { body { grid-template-columns: 1fr; grid-template-rows: 55vh auto; height: auto; }
+                              #map { height: 55vh; } }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<aside>
+  <h1 id="title">Loading…</h1>
+  <div class="muted" id="subtitle"></div>
+  <div class="stat" id="now"></div>
+  <input type="range" id="slider" min="0" value="0">
+  <button id="play">Play</button>
+  <label class="muted" style="display:block;margin-top:16px">Load another track.json<br><input type="file" id="file" accept=".json"></label>
+  <h2 style="font-size:15px;margin-top:20px">Passes over observer</h2>
+  <table><thead><tr><th>Rise (UTC)</th><th>Peak el</th><th>Duration</th></tr></thead>
+    <tbody id="passes"></tbody></table>
+  <p class="muted">Orange = peak above 40°, the easiest to spot by eye at dusk or dawn.
+     Shaded circle = where the satellite is ≥10° above the horizon right now.</p>
+</aside>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const RE = 6378.137;  // Earth radius, km
+const map = L.map('map', { worldCopyJump: true }).setView([15, 0], 2);
+L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}', {
+  attribution: 'Tiles &copy; Esri &mdash; Esri, HERE, Garmin, &copy; OpenStreetMap contributors', maxZoom: 16 }).addTo(map);
+
+let layers = L.layerGroup().addTo(map), data, satMarker, footprint, timer;
+
+// Ground radius (km) inside which the satellite is >= minEl above the horizon.
+function footprintKm(altKm, minElDeg) {
+  const el = minElDeg * Math.PI / 180;
+  const lambda = Math.acos(RE / (RE + altKm) * Math.cos(el)) - el;
+  return RE * lambda;
+}
+
+function show(i) {
+  const p = data.points[i];
+  satMarker.setLatLng([p.lat, p.lon]);
+  footprint.setLatLng([p.lat, p.lon]).setRadius(footprintKm(p.alt_km, 10) * 1000);
+  document.getElementById('now').innerHTML =
+    `${p.t.replace('T', ' ').slice(0, 19)} UTC<br>lat ${p.lat.toFixed(2)}°, lon ${p.lon.toFixed(2)}°, alt ${p.alt_km.toFixed(0)} km`;
+}
+
+function render(doc) {
+  data = doc; layers.clearLayers(); clearInterval(timer);
+  document.getElementById('title').textContent = `${doc.satellite.name}  ·  NORAD ${doc.satellite.norad_id}`;
+  document.getElementById('subtitle').textContent = `TLE epoch ${doc.satellite.tle_epoch.slice(0, 16)}Z · start ${doc.start.slice(0, 16)}Z`;
+  doc.segments.forEach(seg => L.polyline(seg, { color: '#4fc3f7', weight: 2, opacity: .8 }).addTo(layers));
+  L.circleMarker([doc.observer.lat, doc.observer.lon], { radius: 6, color: '#ffb74d', fillOpacity: 1 })
+    .bindTooltip('Observer').addTo(layers);
+  footprint = L.circle([0, 0], { radius: 1, color: '#4fc3f7', weight: 1, fillOpacity: .08 }).addTo(layers);
+  satMarker = L.circleMarker([0, 0], { radius: 7, color: '#fff', fillColor: '#4fc3f7', fillOpacity: 1 }).addTo(layers);
+
+  const slider = document.getElementById('slider');
+  slider.max = doc.points.length - 1; slider.value = 0; show(0);
+
+  const tbody = document.getElementById('passes'); tbody.innerHTML = '';
+  doc.passes.forEach(p => {
+    const tr = document.createElement('tr'); tr.className = 'pass';
+    const d = Math.round(p.duration_s);
+    tr.innerHTML = `<td>${p.rise.replace('T', ' ').slice(5, 16)}</td>
+      <td class="${p.max_el >= 40 ? 'high' : ''}">${p.max_el.toFixed(1)}°</td><td>${Math.floor(d / 60)}m ${d % 60}s</td>`;
+    // Jump the slider to the track point nearest this pass's peak, if it's in range.
+    tr.onclick = () => {
+      const target = Date.parse(p.culmination);
+      let best = 0;
+      doc.points.forEach((pt, i) => {
+        if (Math.abs(Date.parse(pt.t) - target) < Math.abs(Date.parse(doc.points[best].t) - target)) best = i;
+      });
+      slider.value = best; show(best);
+    };
+    tbody.appendChild(tr);
+  });
+  if (!doc.passes.length) tbody.innerHTML = '<tr><td colspan="3" class="muted">No passes in window</td></tr>';
+}
+
+document.getElementById('slider').oninput = e => show(+e.target.value);
+document.getElementById('play').onclick = e => {
+  if (timer) { clearInterval(timer); timer = null; e.target.textContent = 'Play'; return; }
+  e.target.textContent = 'Pause';
+  timer = setInterval(() => {
+    const s = document.getElementById('slider');
+    s.value = (+s.value + 1) % data.points.length; show(+s.value);
+  }, 60);
+};
+document.getElementById('file').onchange = e => {
+  const f = e.target.files[0]; if (!f) return;
+  f.text().then(t => render(JSON.parse(t)));
+};
+
+fetch('track.json').then(r => r.json()).then(render).catch(() => {
+  document.getElementById('title').textContent = 'No track.json found';
+  document.getElementById('subtitle').textContent = 'Run: python -m satpass track --out web/track.json';
+});
+</script>
+</body>
+</html>

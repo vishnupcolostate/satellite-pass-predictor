@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "satpass"
+version = "0.1.0"
+description = "Predict satellite passes and ground tracks from TLEs using SGP4"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = ["sgp4>=2.22"]
+license = { text = "MIT" }
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[project.scripts]
+satpass = "satpass.cli:main"
+
+[tool.setuptools]
+packages = ["satpass"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["tests"]
